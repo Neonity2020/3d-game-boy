@@ -144,6 +144,31 @@ function updatePresses(dt) {
   gb.slider.position.x += (target - gb.slider.position.x) * Math.min(1, dt * 9);
 }
 
+/** True while any button or the power switch is still easing toward its rest pose. */
+function pressesSettled() {
+  for (const s of presses.values()) {
+    if (Math.abs(s.target - s.value) > 0.001) return false;
+  }
+  return Math.abs((gb.powerOn ? 0.42 : -0.42) - gb.slider.position.x) > 0.001
+    ? false
+    : true;
+}
+
+// OrbitControls damps the camera, so "did the view change" needs the previous
+// position and orientation, not a dirty flag we would have to set by hand.
+const camPrev = { x: NaN, y: NaN, z: NaN, qx: NaN, qy: NaN, qz: NaN, qw: NaN };
+
+function cameraMoved() {
+  const { position: p, quaternion: q } = camera;
+  const moved =
+    p.x !== camPrev.x || p.y !== camPrev.y || p.z !== camPrev.z ||
+    q.x !== camPrev.qx || q.y !== camPrev.qy ||
+    q.z !== camPrev.qz || q.w !== camPrev.qw;
+  camPrev.x = p.x; camPrev.y = p.y; camPrev.z = p.z;
+  camPrev.qx = q.x; camPrev.qy = q.y; camPrev.qz = q.z; camPrev.qw = q.w;
+  return moved;
+}
+
 /* ------------------------------------------------------------------ *
  * Input — 3D buttons
  * ------------------------------------------------------------------ */
@@ -287,6 +312,7 @@ function setPower(on) {
   tetris.power(on);
   chip.unlock();
   chip.play('power');
+  visualsDirty = true;
 }
 
 function activate(action, isRepeat = false) {
@@ -315,6 +341,7 @@ let firstFrame = true;
 let rafId = null;
 let lastTick = performance.now();
 const stats = { frames: 0, lastDt: 0, lastAt: 0 };
+let visualsDirty = true;
 
 function frame() {
   rafId = null;
@@ -322,6 +349,19 @@ function frame() {
   stepFrame();
   if (rafId === null) rafId = requestAnimationFrame(frame);
 }
+
+/**
+ * The console only redraws when something actually changed. Between moves the
+ * scene is perfectly still, and a still scene does not need 60 shadow-mapped
+ * frames a second — that idle churn is what pins a CPU core.
+ *
+ * Only some states actually change every frame. Playing needs the full rate;
+ * the title and game-over screens just blink a caption, so a redraw ten times a
+ * second is indistinguishable and costs a sixth as much; paused and powered-off
+ * change nothing at all and only redraw when something else moves.
+ */
+const FRAME_BUDGET = { playing: 0, boot: 0, title: 100, over: 100 };
+let lastDraw = 0;
 
 function stepFrame() {
   // the game module works in milliseconds, matching its timing constants
@@ -345,19 +385,26 @@ function stepFrame() {
   }
 
   tickRepeats(now);
+  controls.update();
 
-  tetris.update(dt);
-  tetris.render();
-  gb.screen.texture.needsUpdate = true;
+  // Simulation always runs — it owns the clocks — but it only forces a repaint
+  // when this state is due one or when a transition is still easing.
+  const state = tetris.update(dt);
+  const budget = FRAME_BUDGET[state];
 
-  // power lamp
+  // Movement and lighting are eased, so keep drawing until they have settled.
+  if (!introDone || cameraMoved() || !pressesSettled()) visualsDirty = true;
+
+  // power lamp — steady, it only ramps up and down
   const lampOn = gb.powerOn && tetris.state !== 'off';
-  const flicker = 0.85 + Math.sin(now / 140) * 0.06;
   gb.ledMat.emissiveIntensity = THREE.MathUtils.lerp(
     gb.ledMat.emissiveIntensity,
-    lampOn ? 2.6 * flicker : 0,
+    lampOn ? 2.6 : 0,
     0.18
   );
+  if (Math.abs(gb.ledMat.emissiveIntensity - (lampOn ? 2.6 : 0)) > 0.02) {
+    visualsDirty = true;
+  }
 
   // screen brightness follows the game state
   const targetEmissive = tetris.state === 'off' ? 0.16 : 0.78;
@@ -366,6 +413,9 @@ function stepFrame() {
     targetEmissive,
     0.12
   );
+  if (Math.abs(gb.screenMat.emissiveIntensity - targetEmissive) > 0.004) {
+    visualsDirty = true;
+  }
 
   updatePresses(dt);
 
@@ -375,22 +425,27 @@ function stepFrame() {
   screenNormal.set(0, 0, 1).applyQuaternion(gb.group.quaternion).normalize();
   const facing = Math.abs(tmpVec.dot(screenNormal));
   const slant = 1 - facing;
+  const targetGlare = 0.06 + Math.pow(slant, 1.6) * 0.85;
   gb.glare.material.opacity = THREE.MathUtils.lerp(
     gb.glare.material.opacity,
-    0.06 + Math.pow(slant, 1.6) * 0.85,
+    targetGlare,
     0.1
   );
   gb.glare.position.x = slant * 1.1;
   gb.glare.position.y = -slant * 0.5;
-
-  // soft idle sway so the render never feels frozen
-  if (introDone) {
-    gb.group.rotation.y = Math.sin(now / 6000) * 0.035;
-    gb.group.rotation.x = Math.sin(now / 7400) * 0.02;
+  if (Math.abs(gb.glare.material.opacity - targetGlare) > 0.004) {
+    visualsDirty = true;
   }
 
-  controls.update();
+  if (!visualsDirty && !(budget !== undefined && now - lastDraw >= budget)) {
+    return; // still scene: nothing worth drawing
+  }
+
+  lastDraw = now;
+  tetris.render();
+  gb.screen.texture.needsUpdate = true;
   renderer.render(scene, camera);
+  visualsDirty = false;
 
   if (firstFrame) {
     firstFrame = false;
@@ -401,9 +456,11 @@ function stepFrame() {
 /**
  * Embedded browsers and background tabs can throttle requestAnimationFrame to a
  * standstill. If no frame has landed for a while, drive the loop from a timer
- * so the console keeps running and stays responsive.
+ * so the console keeps running and stays responsive. A fully hidden tab is
+ * deliberately left alone — nothing there is being looked at.
  */
 setInterval(() => {
+  if (document.hidden) return;
   if (rafId !== null && performance.now() - lastTick > 250) {
     cancelAnimationFrame(rafId);
     frame();
@@ -414,6 +471,7 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  visualsDirty = true;
 });
 
 // Debug handle: lets you inspect the running scene from the console, and

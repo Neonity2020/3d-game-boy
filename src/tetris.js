@@ -361,7 +361,7 @@ export class Tetris {
   /* -------------------------------- frame ------------------------------ */
 
   update(dt) {
-    if (this.state === 'off') return;
+    if (this.state === 'off') return this.state;
 
     this.time += dt;
     this.sweep = (this.sweep + dt * 0.02) % (H + 30);
@@ -389,6 +389,8 @@ export class Tetris {
         }
       }
     }
+
+    return this.state;
   }
 
   render() {
