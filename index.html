@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>GAME BOY · 3D</title>
+<style>
+  :root {
+    --ink: #e8e4dc;
+    --dim: #8d8779;
+    --accent: #9bbc0f;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #14151a;
+    color: var(--ink);
+    font-family: "DM Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #stage {
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(120% 90% at 50% 8%, #3a3d49 0%, #22242c 42%, #14151a 100%);
+  }
+
+  #stage canvas { display: block; }
+
+  /* ---- vignette + scanline film over the whole viewport ---- */
+  #stage::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(130% 100% at 50% 45%, rgba(0,0,0,0) 42%, rgba(0,0,0,.55) 100%);
+  }
+
+  .hud {
+    position: fixed;
+    pointer-events: none;
+    z-index: 5;
+  }
+
+  #brand {
+    top: 26px;
+    left: 30px;
+    line-height: 1.5;
+  }
+
+  #brand h1 {
+    margin: 0;
+    font-size: 13px;
+    letter-spacing: .42em;
+    font-weight: 500;
+    text-transform: uppercase;
+  }
+
+  #brand p {
+    margin: 6px 0 0;
+    font-size: 11px;
+    letter-spacing: .16em;
+    color: var(--dim);
+  }
+
+  #brand .bar {
+    margin-top: 10px;
+    width: 132px;
+    height: 3px;
+    border-radius: 2px;
+    background: linear-gradient(90deg,
+      #7f3bb5 0 25%, #b5296a 25% 50%, #d8442f 50% 75%, #2f6fd8 75% 100%);
+    opacity: .85;
+  }
+
+  #legend {
+    bottom: 26px;
+    left: 30px;
+    font-size: 11px;
+    line-height: 2;
+    color: var(--dim);
+    letter-spacing: .08em;
+  }
+
+  #legend b {
+    color: var(--ink);
+    font-weight: 500;
+  }
+
+  #legend kbd {
+    display: inline-block;
+    min-width: 18px;
+    padding: 1px 5px;
+    margin-right: 2px;
+    border: 1px solid #454852;
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    background: #262832;
+    color: var(--ink);
+    font: inherit;
+    font-size: 10px;
+    text-align: center;
+  }
+
+  #hint {
+    bottom: 26px;
+    right: 30px;
+    max-width: 210px;
+    text-align: right;
+    font-size: 10.5px;
+    line-height: 1.9;
+    color: var(--dim);
+    letter-spacing: .06em;
+  }
+
+  #hint span { color: var(--accent); }
+
+  #loading {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: #14151a;
+    color: var(--dim);
+    font-size: 11px;
+    letter-spacing: .3em;
+    text-transform: uppercase;
+    z-index: 20;
+    transition: opacity .5s ease;
+  }
+
+  #loading.gone { opacity: 0; pointer-events: none; }
+
+  #crash {
+    position: fixed;
+    left: 50%;
+    bottom: 40px;
+    transform: translateX(-50%);
+    max-width: 70vw;
+    padding: 12px 18px;
+    border: 1px solid #7a3030;
+    border-radius: 8px;
+    background: #2a1518;
+    color: #ffb4ac;
+    font-size: 11px;
+    letter-spacing: .04em;
+    line-height: 1.6;
+    z-index: 30;
+  }
+
+  @media (max-width: 720px) {
+    #legend { display: none; }
+    #hint { left: 30px; right: auto; text-align: left; bottom: 18px; }
+    #brand { top: 18px; left: 18px; }
+  }
+</style>
+</head>
+<body>
+  <div id="stage"></div>
+
+  <div class="hud" id="brand">
+    <h1>Game Boy</h1>
+    <p>Model DMG-01 &middot; 1989</p>
+    <div class="bar"></div>
+  </div>
+
+  <div class="hud" id="legend">
+    <div><kbd>&larr;</kbd><kbd>&rarr;</kbd><kbd>&darr;</kbd><kbd>&uarr;</kbd> <b>移动 / 旋转</b></div>
+    <div><kbd>Z</kbd><kbd>X</kbd> <b>旋转</b> &nbsp; <kbd>Space</kbd> <b>加速下落</b></div>
+    <div><kbd>Enter</kbd> <b>开始 / 暂停</b> &nbsp; <kbd>P</kbd> <b>电源</b></div>
+  </div>
+
+  <div class="hud" id="hint">
+    拖拽旋转视角 &middot; 滚轮缩放<br />
+    直接点击机身上的<span>按键</span>游玩<br />
+    点击顶部<span>电源开关</span>关机
+  </div>
+
+  <div id="loading">loading</div>
+
+  <div id="crash" hidden></div>
+
+  <script>
+    // Surface runtime failures instead of leaving a blank canvas behind.
+    window.addEventListener('error', (e) => {
+      const el = document.getElementById('crash');
+      el.hidden = false;
+      el.textContent = String(e.message || e.error || e);
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      const el = document.getElementById('crash');
+      el.hidden = false;
+      el.textContent = String(e.reason);
+    });
+  </script>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three.module.js",
+      "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js",
+      "three/addons/geometries/RoundedBoxGeometry.js": "./vendor/RoundedBoxGeometry.js",
+      "three/addons/environments/RoomEnvironment.js": "./vendor/RoomEnvironment.js"
+    }
+  }
+  </script>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

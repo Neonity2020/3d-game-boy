@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Python http.server artifacts (only used to serve the page locally)
+__pycache__/
+*.py[cod]
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# node
+node_modules/
